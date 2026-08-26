@@ -28,8 +28,8 @@ class MailChannel(models.Model):
         required=False,
     )
 
-    def _to_store(self, store: Store):
-        result = super()._to_store(store)
+    def _to_store(self, store: Store, fields):
+        result = super()._to_store(store, fields)
         if not self:
             return result
         for record in self:
@@ -47,6 +47,33 @@ class MailChannel(models.Model):
             )
         return result
 
+    @api.model
+    def _get_channels_as_member(self):
+        # Odoo 19 moved this helper from ``res.partner`` (per-partner method)
+        # to ``discuss.channel`` (``@api.model``, based on ``self.env.user``).
+        # See ``mail/models/discuss/discuss_channel.py`` and its only caller
+        # ``res.users._init_messaging``.
+        channels = super()._get_channels_as_member()
+        if self.env.user.has_group("mail_gateway.gateway_user"):
+            channels |= self.env["discuss.channel"].search(
+                [
+                    ("channel_type", "=", "gateway"),
+                    (
+                        "channel_member_ids",
+                        "in",
+                        self.env["discuss.channel.member"]
+                        .sudo()
+                        ._search(
+                            [
+                                ("partner_id", "=", self.env.user.partner_id.id),
+                                ("is_pinned", "=", True),
+                            ]
+                        ),
+                    ),
+                ]
+            )
+        return channels
+
     def _generate_avatar_gateway(self):
         # We will use this function to set a default avatar on each module
         return False
@@ -59,7 +86,6 @@ class MailChannel(models.Model):
             return False
         return base64.b64encode(avatar.encode())
 
-    @api.returns("mail.message", lambda value: value.id)
     def message_post(
         self, *, message_type="notification", gateway_type=False, **kwargs
     ):
@@ -93,7 +119,7 @@ class MailChannel(models.Model):
         **kwargs,
     ):
         res = super()._message_update_content(
-            message=message,
+            message,
             body=body,
             attachment_ids=attachment_ids,
             partner_ids=partner_ids,

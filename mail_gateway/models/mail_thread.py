@@ -38,7 +38,7 @@ class MailThread(models.AbstractModel):
                 )
             )
 
-    def _notify_get_recipients(self, message, msg_vals, **kwargs):
+    def _notify_get_recipients(self, message, msg_vals=False, **kwargs):
         if self.env.context.get("link_gateway_message"):
             # When we have the context link_gateway_message we want to avoid
             # notify the followers thread.
@@ -74,8 +74,8 @@ class MailThread(models.AbstractModel):
             return result
         return super()._notify_get_recipients(message, msg_vals, **kwargs)
 
-    def _thread_to_store(self, store: Store, /, *, fields=None, request_list=None):
-        res = super()._thread_to_store(store, fields=fields, request_list=request_list)
+    def _thread_to_store(self, store: Store, fields, *, request_list=None):
+        res = super()._thread_to_store(store, fields, request_list=request_list)
         for record in self:
             followers = record.message_get_followers()
             if "mail.followers" in followers:
@@ -110,7 +110,7 @@ class MailThread(models.AbstractModel):
         **kwargs,
     ):
         result = super()._message_update_content(
-            message=message,
+            message,
             body=body,
             attachment_ids=attachment_ids,
             partner_ids=partner_ids,
@@ -127,9 +127,4 @@ class MailThread(models.AbstractModel):
                         "gateway_thread_data": gateway_msg.sudo().gateway_thread_data,
                     },
                 )
-        return result
-
-    def _get_allowed_message_post_params(self):
-        result = super()._get_allowed_message_post_params()
-        result.add("gateway_notifications")
         return result

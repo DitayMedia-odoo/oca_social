@@ -83,21 +83,18 @@ class MailMessage(models.Model):
     def _to_store(
         self,
         store: Store,
-        /,
+        fields,
         *,
-        fields=None,
         format_reply=True,
-        msg_vals=None,
-        for_current_user=False,
+        msg_vals=False,
         add_followers=False,
         followers=None,
     ):
         result = super()._to_store(
             store,
-            fields=fields,
+            fields,
             format_reply=format_reply,
             msg_vals=msg_vals,
-            for_current_user=for_current_user,
             add_followers=add_followers,
             followers=followers,
         )

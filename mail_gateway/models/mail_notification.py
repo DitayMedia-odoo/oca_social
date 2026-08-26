@@ -26,8 +26,13 @@ class MailNotification(models.Model):
     def _set_read_gateway(self):
         self.sudo().write({"is_read": True, "read_date": fields.Datetime.now()})
 
-    def _to_store(self, store: Store, /):
-        result = super()._to_store(store)
+    def _to_store(self, store: Store, fields):
+        # NOTE: Odoo 19 no longer defines a base ``_to_store`` for
+        # ``mail.notification`` (only ``_to_store_defaults``), so there is
+        # no ``super()`` implementation left to call here. Replicate the
+        # generic fallback used by core models without their own
+        # ``_to_store`` (see ``discuss.channel._to_store``).
+        store.add_records_fields(self, fields)
         for record in self:
             store.add(
                 record,
@@ -36,7 +41,6 @@ class MailNotification(models.Model):
                     "channel_name": record.gateway_channel_id.name,
                 },
             )
-        return result
 
     def send_gateway(self, auto_commit=False, raise_exception=False, parse_mode="HTML"):
         for record in self:
