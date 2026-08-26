@@ -7,7 +7,7 @@ patch(Message.prototype, {
         if (
             this.message.gateway_type &&
             this.message.gateway_type.includes("whatsapp") &&
-            !["partner", "guest"].includes(this.message.author?.type)
+            !this.message.author
         ) {
             return url("/mail_gateway_whatsapp/static/description/icon.png");
         }

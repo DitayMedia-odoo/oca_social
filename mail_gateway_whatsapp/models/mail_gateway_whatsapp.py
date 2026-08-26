@@ -17,6 +17,7 @@ from odoo.http import request
 from odoo.tools import html2plaintext
 
 from odoo.addons.base.models.ir_mail_server import MailDeliveryException
+from odoo.addons.mail.tools.discuss import Store
 
 _logger = logging.getLogger(__name__)
 
@@ -213,12 +214,12 @@ class MailGatewayWhatsappService(models.AbstractModel):
                     self._post_process_reply(related_message)
                     new_message.gateway_message_id = new_related_message
                     gateway_thread_data = new_message.sudo().gateway_thread_data
-                    new_message._bus_send_store(
+                    Store(bus_channel=new_message._bus_channel()).add(
                         new_message,
                         {
                             "gateway_thread_data": gateway_thread_data,
                         },
-                    )
+                    ).bus_send()
 
     def _send(
         self,

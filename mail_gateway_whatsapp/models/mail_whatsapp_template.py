@@ -8,7 +8,6 @@ from werkzeug.urls import url_join
 
 from odoo import Command, api, fields, models
 from odoo.exceptions import UserError, ValidationError
-from odoo.tools import ustr
 
 from odoo.addons.phone_validation.tools import phone_validation
 
@@ -242,10 +241,10 @@ class MailWhatsAppTemplate(models.Model):
                 }
             )
         except requests.exceptions.HTTPError as ex:
-            msj = f"{ustr(ex)} \n{ex.response.text}"
+            msj = f"{ex} \n{ex.response.text}"
             raise UserError(msj) from ex
         except Exception as err:
-            raise UserError(ustr(err)) from err
+            raise UserError(str(err)) from err
 
     def _prepare_values_to_export(self):
         components = self._prepare_components_to_export()
