@@ -33,7 +33,10 @@ class MailChannel(models.Model):
         if not self:
             return result
         for record in self:
-            store.add(
+            # store.add() re-dispatches into _to_store() unconditionally
+            # (mail/tools/discuss.py:121), so calling it from here recurses.
+            # add_records_fields() is what core documents for this case.
+            store.add_records_fields(
                 record,
                 {
                     "gateway": {

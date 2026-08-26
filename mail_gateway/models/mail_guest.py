@@ -21,4 +21,7 @@ class MailGuest(models.Model):
         store.add_records_fields(self, fields)
         if not fields or "gateway_id" in fields:
             for record in self:
-                store.add(record, {"gateway": {"id": record.gateway_id.id}})
+                # see note above: store.add() would recurse into _to_store()
+                store.add_records_fields(
+                    record, {"gateway": {"id": record.gateway_id.id}}
+                )
