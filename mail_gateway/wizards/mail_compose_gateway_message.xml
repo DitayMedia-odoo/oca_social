@@ -10,9 +10,11 @@
             <label for="partner_ids" position="attributes">
                 <attribute name="invisible">1</attribute>
             </label>
-            <field name="partner_ids" position="attributes">
+            <!-- Odoo 19 wraps two partner_ids fields in one div; a bare
+                 field op would only match the first one. -->
+            <xpath expr="//div[field[@name='partner_ids']]" position="attributes">
                 <attribute name="invisible">1</attribute>
-            </field>
+            </xpath>
             <field name="subject" position="before">
                 <field name="wizard_partner_ids" invisible="1" />
                 <field
@@ -27,12 +29,6 @@
                 <attribute name="invisible">1</attribute>
                 <attribute name="required">0</attribute>
             </field>
-            <xpath
-                expr="//widget[@name='mail_composer_recipient_list']/.."
-                position="attributes"
-            >
-                <attribute name="invisible">True</attribute>
-            </xpath>
         </field>
     </record>
 </odoo>
