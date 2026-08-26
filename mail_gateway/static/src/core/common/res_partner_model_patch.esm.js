@@ -4,7 +4,7 @@ import {patch} from "@web/core/utils/patch";
 
 // Odoo 19 dropped the `Persona` store model: personas are now the real server
 // models `res.partner` and `mail.guest`. The gateway channels are only ever
-// sent along partner data (see `mail_gateway/tools/discuss.py`), so the field
+// sent along partner data (see `res.partner._to_store_defaults`), so the field
 // belongs on `res.partner`.
 patch(ResPartner.prototype, {
     setup() {

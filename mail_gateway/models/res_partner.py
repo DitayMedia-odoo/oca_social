@@ -2,6 +2,7 @@
 # License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
 
 from odoo import api, fields, models
+from odoo.addons.mail.tools.discuss import Store
 
 
 class ResPartner(models.Model):
@@ -12,6 +13,19 @@ class ResPartner(models.Model):
     gateway_channel_ids = fields.One2many(
         "res.partner.gateway.channel", inverse_name="partner_id"
     )
+
+    def _to_store_defaults(self, target):
+        # Odoo 19 removed ``Store.one_id``, the hook this module used to
+        # monkeypatch in ``tools/discuss.py`` so that every serialized partner
+        # carried its gateway channels. ``Store.One`` now emits a bare id and
+        # the partner data travels in its own store bucket, so the value is
+        # declared here instead, on the native extension point.
+        return super()._to_store_defaults(target) + [
+            Store.Attr(
+                "gateway_channels",
+                lambda partner: partner.sudo().gateway_channel_ids.mail_format(),
+            )
+        ]
 
 
 class ResPartnerGatewayChannel(models.Model):
