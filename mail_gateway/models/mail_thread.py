@@ -77,19 +77,50 @@ class MailThread(models.AbstractModel):
     def _thread_to_store(self, store: Store, fields, *, request_list=None):
         res = super()._thread_to_store(store, fields, request_list=request_list)
         for record in self:
-            followers = record.message_get_followers()
-            if "mail.followers" in followers:
-                store.add(
-                    record,
-                    {
-                        "gateway_followers": [
-                            f["partner"]
-                            for f in followers["mail.followers"]
-                            if f["partner"]["gateway_channels"]
-                        ]
-                    },
-                    as_thread=True,
+            # Do NOT use record.message_get_followers() here: in Odoo 19,
+            # Store.add(..., as_thread=True) unconditionally re-enters the
+            # record's _thread_to_store (see Store.add in
+            # odoo/addons/mail/tools/discuss.py), and
+            # _message_followers_to_store() calls exactly that internally.
+            # Calling it from inside this very override would recurse
+            # forever. Query mail.followers directly instead, using the same
+            # domain _message_followers_to_store() uses.
+            # sudo: mail.followers/res.partner - mirrors the sudo used by
+            # mail.followers._to_store_defaults() to read partner_id, so
+            # portal followers are not dropped by multi-company ACLs.
+            follower_partners = (
+                self.env["mail.followers"]
+                .sudo()
+                .search(
+                    [
+                        ("res_model", "=", record._name),
+                        ("res_id", "=", record.id),
+                        ("partner_id", "!=", self.env.user.partner_id.id),
+                    ]
                 )
+                .partner_id
+            )
+            gateway_partners = follower_partners.filtered("gateway_channel_ids")
+            if gateway_partners:
+                # The core store never sends gateway_channels on its own:
+                # it is a field private to this module, so it must be added
+                # explicitly for the partners we are about to reference.
+                store.add(
+                    gateway_partners,
+                    {
+                        "gateway_channels": lambda partner: (
+                            partner.sudo().gateway_channel_ids.mail_format()
+                        ),
+                    },
+                )
+            # add_records_fields (not store.add(..., as_thread=True)): the
+            # latter would dispatch back into this same _thread_to_store
+            # override, for the same reentrancy reason as above.
+            store.add_records_fields(
+                record,
+                {"gateway_followers": Store.Many(gateway_partners)},
+                as_thread=True,
+            )
         return res
 
     def _check_can_update_message_content(self, messages):
@@ -121,10 +152,10 @@ class MailThread(models.AbstractModel):
             # Unlink the message
             for gateway_msg in message.gateway_message_ids:
                 gateway_msg.gateway_message_id = False
-                gateway_msg._bus_send_store(
+                Store(bus_channel=gateway_msg._bus_channel()).add(
                     gateway_msg,
                     {
                         "gateway_thread_data": gateway_msg.sudo().gateway_thread_data,
                     },
-                )
+                ).bus_send()
         return result
