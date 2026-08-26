@@ -1,8 +1,8 @@
-import {assignDefined, assignIn} from "@mail/utils/common/misc";
-import {Record} from "@mail/core/common/record";
+import {assignIn} from "@mail/utils/common/misc";
+import {fields} from "@mail/core/common/record";
+import {imageUrl} from "@web/core/utils/urls";
 import {Thread} from "@mail/core/common/thread_model";
 import {patch} from "@web/core/utils/patch";
-import {url} from "@web/core/utils/urls";
 
 patch(Thread, {
     _insert(data) {
@@ -18,10 +18,10 @@ patch(Thread, {
 patch(Thread.prototype, {
     setup() {
         super.setup();
-        this.gateway = Record.one("Gateway");
-        this.operator = Record.one("Persona");
+        this.gateway = fields.One("Gateway");
+        this.operator = fields.One("res.partner");
         this.gateway_notifications = [];
-        this.gateway_followers = Record.many("Persona");
+        this.gateway_followers = fields.Many("res.partner");
     },
     get isChatChannel() {
         return this.channel_type === "gateway" || super.isChatChannel;
@@ -33,10 +33,9 @@ patch(Thread.prototype, {
         if (this.channel_type !== "gateway") {
             return super.avatarUrl;
         }
-        return url(
-            `/web/image/discuss.channel/${this.id}/avatar_128`,
-            assignDefined({}, {unique: this.avatarCacheKey})
-        );
+        return imageUrl("discuss.channel", this.id, "avatar_128", {
+            unique: this.avatar_cache_key,
+        });
     },
     /** @param {Object} data */
     update(data) {

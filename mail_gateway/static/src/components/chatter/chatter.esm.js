@@ -20,6 +20,6 @@ patch(Chatter.prototype, {
     },
     toggleComposer(mode = false) {
         this.state.thread.composer.isGateway = mode === "gateway";
-        super.toggleComposer(mode);
+        super.toggleComposer(...arguments);
     },
 });

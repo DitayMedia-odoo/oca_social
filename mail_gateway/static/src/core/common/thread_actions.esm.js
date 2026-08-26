@@ -1,103 +1,105 @@
 import {_t} from "@web/core/l10n/translation";
-import {threadActionsRegistry} from "@mail/core/common/thread_actions";
+import {registerThreadAction} from "@mail/core/common/thread_actions";
 
-threadActionsRegistry
-    .add("open-gw-new-partner", {
-        condition(component) {
-            const thread = component.thread;
-            if (
-                thread?.model !== "discuss.channel" ||
-                (component.props.chatWindow && !component.props.chatWindow.isOpen)
-            ) {
-                return false;
-            }
-            if (thread._guestChecked) {
-                return Boolean(thread._cachedGuestId);
-            }
-            const orm = component.env.services.orm;
-            (async () => {
-                const members = await orm.silent.searchRead(
-                    "discuss.channel.member",
-                    [["channel_id", "=", thread.id]],
-                    ["guest_id"]
-                );
-                const guestMembers = members.filter((m) => m.guest_id);
+// Odoo 19: action definitions receive a params object ({owner, thread, store,
+// action}) instead of the owner component.
+registerThreadAction("open-gw-new-partner", {
+    condition({owner, thread}) {
+        if (
+            thread?.model !== "discuss.channel" ||
+            (owner.props.chatWindow && !owner.props.chatWindow.isOpen)
+        ) {
+            return false;
+        }
+        if (thread._guestChecked) {
+            return Boolean(thread._cachedGuestId);
+        }
+        const orm = owner.env.services.orm;
+        (async () => {
+            const members = await orm.silent.searchRead(
+                "discuss.channel.member",
+                [["channel_id", "=", thread.id]],
+                ["guest_id"]
+            );
+            const guestMembers = members.filter((m) => m.guest_id);
 
-                if (guestMembers.length === 1) {
-                    thread._cachedGuestId = guestMembers[0].guest_id;
-                } else {
-                    thread._cachedGuestId = null;
-                }
-                thread._guestChecked = true;
-                component.render?.();
-            })();
+            if (guestMembers.length === 1) {
+                thread._cachedGuestId = guestMembers[0].guest_id;
+            } else {
+                thread._cachedGuestId = null;
+            }
+            thread._guestChecked = true;
+            owner.render?.();
+        })();
+        return false;
+    },
+    icon: "fa fa-fw fa-address-book",
+    name: _t("New Partner"),
+    async open({owner, thread}) {
+        const guestId = thread._cachedGuestId;
+        if (!guestId) {
+            return;
+        }
+        await owner.env.services.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: "mail.guest.manage",
+            context: {default_guest_id: guestId[0]},
+            views: [[false, "form"]],
+            target: "new",
+        });
+    },
+    sequence: 18,
+});
+registerThreadAction("open-gw-profile", {
+    condition({owner, thread}) {
+        // Check basic conditions
+        if (
+            thread?.model !== "discuss.channel" ||
+            (owner.props.chatWindow && !owner.props.chatWindow.isOpen)
+        ) {
             return false;
-        },
-        icon: "fa fa-fw fa-address-book",
-        name: _t("New Partner"),
-        async open(component) {
-            const guestId = component.thread._cachedGuestId;
-            if (!guestId) return;
-            await component.env.services.action.doAction({
-                type: "ir.actions.act_window",
-                res_model: "mail.guest.manage",
-                context: {default_guest_id: guestId[0]},
-                views: [[false, "form"]],
-                target: "new",
-            });
-        },
-        iconLarge: "fa fa-fw fa-lg fa-address-book",
-        sequence: 18,
-    })
-    .add("open-gw-profile", {
-        condition(component) {
-            // Check basic conditions
-            if (
-                component.thread?.model !== "discuss.channel" ||
-                (component.props.chatWindow && !component.props.chatWindow.isOpen)
-            ) {
-                return false;
-            }
-            if (component.thread._partnerIdChecked) {
-                return Boolean(component.thread._cachedPartnerId);
-            }
-            const orm = component.env.services.orm;
-            let partnerId = null;
-            (async () => {
-                const channelData = await orm.silent.searchRead(
-                    "discuss.channel",
-                    [["id", "=", component.thread.id]],
-                    ["gateway_channel_token"]
+        }
+        if (thread._partnerIdChecked) {
+            return Boolean(thread._cachedPartnerId);
+        }
+        const orm = owner.env.services.orm;
+        let partnerId = null;
+        (async () => {
+            const channelData = await orm.silent.searchRead(
+                "discuss.channel",
+                [["id", "=", thread.id]],
+                ["gateway_channel_token"]
+            );
+            if (channelData[0]?.gateway_channel_token) {
+                const gatewayChannel = await orm.silent.searchRead(
+                    "res.partner.gateway.channel",
+                    [["gateway_token", "=", channelData[0].gateway_channel_token]],
+                    ["partner_id"]
                 );
-                if (channelData[0]?.gateway_channel_token) {
-                    const gatewayChannel = await orm.silent.searchRead(
-                        "res.partner.gateway.channel",
-                        [["gateway_token", "=", channelData[0].gateway_channel_token]],
-                        ["partner_id"]
-                    );
-                    partnerId = Array.isArray(gatewayChannel[0]?.partner_id)
-                        ? gatewayChannel[0].partner_id[0]
-                        : gatewayChannel[0]?.partner_id;
-                } else {
-                    partnerId = component.thread.correspondent?.persona?.id;
-                }
-                component.thread._cachedPartnerId = partnerId;
-                component.thread._partnerIdChecked = true;
-                component.render?.();
-            })();
-            return false;
-        },
-        icon: "fa fa-fw fa-user-circle-o",
-        name: _t("Open Contact"),
-        async open(component) {
-            const partnerId = component.thread._cachedPartnerId;
-            await component.env.services.action.doAction({
-                type: "ir.actions.act_window",
-                res_model: "res.partner",
-                res_id: partnerId,
-                views: [[false, "form"]],
-            });
-        },
-        iconLarge: "fa fa-fw fa-lg fa-user-circle-o",
-        sequence: 17,
-    });
+                partnerId = Array.isArray(gatewayChannel[0]?.partner_id)
+                    ? gatewayChannel[0].partner_id[0]
+                    : gatewayChannel[0]?.partner_id;
+            } else {
+                // Odoo 19: `correspondent` is a discuss.channel.member whose
+                // `persona` getter returns its res.partner or mail.guest.
+                partnerId = thread.correspondent?.partner_id?.id;
+            }
+            thread._cachedPartnerId = partnerId;
+            thread._partnerIdChecked = true;
+            owner.render?.();
+        })();
+        return false;
+    },
+    icon: "fa fa-fw fa-user-circle-o",
+    name: _t("Open Contact"),
+    async open({owner, thread}) {
+        const partnerId = thread._cachedPartnerId;
+        await owner.env.services.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: "res.partner",
+            res_id: partnerId,
+            views: [[false, "form"]],
+        });
+    },
+    sequence: 17,
+});

@@ -40,21 +40,28 @@ patch(Composer.prototype, {
         const attachmentIds = this.props.composer.attachments.map(
             (attachment) => attachment.id
         );
-        const body = this.props.composer.textInputContent;
-        const validMentions = this.store.user
-            ? this.messageService.getMentionsFromText(body, {
+        // Odoo 19: `textInputContent` became `composerText`, the mention
+        // helpers moved from the (removed) mail.message service to the store,
+        // and `store.user` became `store.self_partner`.
+        const body = this.props.composer.composerText;
+        const validMentions = this.store.self_partner
+            ? this.store.getMentionsFromText(body, {
                   mentionedChannels: this.props.composer.mentionedChannels,
                   mentionedPartners: this.props.composer.mentionedPartners,
+                  mentionedRoles: this.props.composer.mentionedRoles,
+                  thread: this.thread,
               })
             : undefined;
-        // Debugger
         const context = {
             default_attachment_ids: attachmentIds,
-            default_body: await prettifyMessageContent(body, validMentions),
+            default_body: await prettifyMessageContent(body, {validMentions}),
             default_model: this.thread.model,
+            // Odoo 19: suggested recipients are plain objects holding a
+            // `partner_id` id, the `Persona` record and its `checked` flag are
+            // both gone.
             default_partner_ids: this.thread.suggestedRecipients
-                .filter((recipient) => recipient.checked)
-                .map((recipient) => recipient.persona.id),
+                .filter((recipient) => recipient.partner_id)
+                .map((recipient) => recipient.partner_id),
             default_res_ids: [this.thread.id],
             default_subtype_xmlid: "mail.mt_comment",
             mail_post_autofollow: this.thread.hasWriteAccess,
@@ -92,11 +99,13 @@ patch(Composer.prototype, {
                 // args === { special: true } : click on 'discard'
                 const isDiscard = args.length === 0 || args[0]?.special;
                 // Otherwise message is posted (args === [undefined])
-                if (!isDiscard && this.props.composer.thread.type === "mailbox") {
+                if (!isDiscard && this.props.composer.thread?.model === "mail.box") {
                     this.notifySendFromMailbox();
                 }
                 this.clear();
-                this.props.messageToReplyTo?.cancel();
+                // Odoo 19: the `messageToReplyTo` prop is gone, the reply
+                // target now lives on the composer record itself.
+                this.props.composer.replyToMessage = undefined;
                 if (this.thread) {
                     this.thread?.fetchNewMessages();
                 }
