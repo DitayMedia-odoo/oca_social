@@ -11,6 +11,8 @@ from io import StringIO
 import requests
 import requests_toolbelt
 
+from markupsafe import Markup, escape
+
 from odoo import models
 from odoo.exceptions import UserError
 from odoo.http import request
@@ -107,10 +109,14 @@ class MailGatewayWhatsappService(models.AbstractModel):
 
     def _process_update(self, chat, message, value):
         chat.ensure_one()
-        body = ""
+        # message_post() escapes a plain str body and only keeps markup for
+        # Markup (mail_thread.py: "escape if text, keep if markup"). Build the
+        # body as Markup so the location anchor survives, and escape every
+        # piece that comes from the sender so it cannot inject HTML.
+        body = Markup("")
         attachments = []
         if message.get("text"):
-            body = message.get("text").get("body")
+            body = escape(message.get("text").get("body"))
         for key in ["image", "audio", "video", "document", "sticker"]:
             if message.get(key):
                 image_id = message.get(key).get("id")
@@ -144,7 +150,7 @@ class MailGatewayWhatsappService(models.AbstractModel):
                 if "audio/" in image_info["mime_type"]:
                     # Tell discuss to treat this attachment as voice.
                     attachment_info["voice"] = True
-                body += message.get(key).get("caption", "")
+                body += escape(message.get(key).get("caption", ""))
                 attachments.append(
                     (
                         "{}{}".format(
@@ -156,10 +162,12 @@ class MailGatewayWhatsappService(models.AbstractModel):
                     )
                 )
         if message.get("location"):
-            body += (
+            body += Markup(
                 '<a target="_blank" href="https://www.google.com/'
-                f'maps/search/?api=1&query={message["location"]["latitude"]},'
-                f'{message["location"]["longitude"]}">Location</a>'
+                'maps/search/?api=1&query=%s,%s">Location</a>'
+            ) % (
+                message["location"]["latitude"],
+                message["location"]["longitude"],
             )
         if message.get("contacts"):
             pass
