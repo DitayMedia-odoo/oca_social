@@ -223,6 +223,100 @@ class TestMailGatewayWhatsApp(MailGatewayTestCase):
         self.assertFalse(message.author_id)
         self.assertFalse(message.parent_id)
 
+    def _quick_reply_message(self, payload):
+        """Build an inbound webhook payload carrying only a tapped reply."""
+        message = {"from": "34699999999", "id": "wamid.QR", "timestamp": "1234"}
+        message.update(payload)
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                    "changes": [
+                        {
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {
+                                    "display_phone_number": "1234",
+                                    "phone_number_id": "34699999999",
+                                },
+                                "contacts": [
+                                    {
+                                        "profile": {"name": "NAME"},
+                                        "wa_id": "34699999999",
+                                    }
+                                ],
+                                "messages": [message],
+                            },
+                            "field": "messages",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def test_receive_interactive_button_reply(self):
+        # Tapping an interactive button must land in the conversation.
+        message = self.receive_message(
+            self._quick_reply_message(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button_reply",
+                        "button_reply": {"id": "confirm-yes", "title": "Si, confirmo"},
+                    },
+                }
+            )
+        )
+        self.assertIn("Si, confirmo", message.body)
+
+    def test_receive_interactive_list_reply(self):
+        message = self.receive_message(
+            self._quick_reply_message(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "list_reply",
+                        "list_reply": {
+                            "id": "slot-2100",
+                            "title": "21:00",
+                            "description": "Terraza",
+                        },
+                    },
+                }
+            )
+        )
+        self.assertIn("21:00", message.body)
+        self.assertIn("Terraza", message.body)
+
+    def test_receive_template_button(self):
+        message = self.receive_message(
+            self._quick_reply_message(
+                {
+                    "type": "button",
+                    "button": {"payload": "CONFIRM", "text": "Confirmar"},
+                }
+            )
+        )
+        self.assertIn("Confirmar", message.body)
+
+    def test_receive_quick_reply_is_escaped(self):
+        # The title comes from the template, but it is echoed back by the
+        # sender, so it must not be able to inject markup.
+        message = self.receive_message(
+            self._quick_reply_message(
+                {
+                    "type": "interactive",
+                    "interactive": {
+                        "type": "button_reply",
+                        "button_reply": {"id": "x", "title": "<b>bold</b>"},
+                    },
+                }
+            )
+        )
+        self.assertNotIn("<b>bold</b>", message.body)
+        self.assertIn("&lt;b&gt;bold&lt;/b&gt;", message.body)
+
     def test_receive_message_02(self):
         # Check that the partner is assigned automatically
         partner = self.env["res.partner"].create(

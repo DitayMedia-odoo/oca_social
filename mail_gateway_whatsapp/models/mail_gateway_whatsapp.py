@@ -169,6 +169,26 @@ class MailGatewayWhatsappService(models.AbstractModel):
                 message["location"]["latitude"],
                 message["location"]["longitude"],
             )
+        # Quick replies. When the customer taps a button (of an interactive
+        # message or of a template) Meta does not resend the original text:
+        # it sends a separate inbound message carrying only what was tapped.
+        # Without handling these, the reply never reaches Odoo and the
+        # conversation looks like the customer answered nothing.
+        if message.get("interactive"):
+            interactive = message["interactive"]
+            # button_reply comes from interactive buttons, list_reply from a
+            # list picker; both carry {id, title} (list_reply adds description).
+            reply = (
+                interactive.get("button_reply")
+                or interactive.get("list_reply")
+                or {}
+            )
+            body += escape(reply.get("title") or "")
+            if reply.get("description"):
+                body += escape(" - %s" % reply["description"])
+        if message.get("button"):
+            # Quick-reply button of an approved template.
+            body += escape(message["button"].get("text") or "")
         if message.get("contacts"):
             pass
         if len(body) > 0 or attachments:
