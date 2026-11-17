@@ -62,23 +62,64 @@ class MailGatewayWhatsappService(models.AbstractModel):
         return result
 
     def _receive_update(self, gateway, update):
-        if update:
-            for entry in update["entry"]:
-                for change in entry["changes"]:
-                    if change["field"] != "messages":
-                        continue
-                    for message in change["value"].get("messages", []):
-                        chat = self._get_channel(
-                            gateway, message["from"], change["value"], force_create=True
+        # Meta retries every delivery that is not answered with a 200, so one
+        # bad message must not turn the whole webhook call into an error: each
+        # message and status runs in its own savepoint and failures are logged.
+        if not update:
+            return
+        for entry in update.get("entry", []):
+            for change in entry.get("changes", []):
+                if change.get("field") != "messages":
+                    continue
+                value = change.get("value", {})
+                for message in value.get("messages", []):
+                    try:
+                        with self.env.cr.savepoint():
+                            self._receive_message(gateway, message, value)
+                    except Exception:
+                        _logger.exception(
+                            "WhatsApp: could not process inbound message %s",
+                            message.get("id"),
                         )
-                        if not chat:
-                            continue
-                        self._process_update(chat, message, change["value"])
-                    for status_info in change["value"].get("statuses", []):
-                        chat_id = gateway._get_channel_id(status_info["recipient_id"])
-                        if status_info.get("status", "") != "failed" or not chat_id:
-                            continue
-                        self._process_update_status(chat_id, status_info)
+                for status_info in value.get("statuses", []):
+                    try:
+                        with self.env.cr.savepoint():
+                            self._receive_status(gateway, status_info)
+                    except Exception:
+                        _logger.exception(
+                            "WhatsApp: could not process status of message %s",
+                            status_info.get("id"),
+                        )
+
+    def _receive_message(self, gateway, message, value):
+        if self._is_duplicate_message(message):
+            _logger.info("WhatsApp: ignoring repeated message %s", message.get("id"))
+            return
+        chat = self._get_channel(gateway, message["from"], value, force_create=True)
+        if not chat:
+            return
+        self._process_update(chat, message, value)
+
+    def _receive_status(self, gateway, status_info):
+        chat_id = gateway._get_channel_id(status_info.get("recipient_id"))
+        if not chat_id:
+            return
+        self._process_update_status(chat_id, status_info)
+
+    def _wamid_to_message_id(self, wamid):
+        return f"<{wamid}@whatsapp.mail_gateway>"
+
+    def _is_duplicate_message(self, message):
+        wamid = message.get("id")
+        if not wamid:
+            return False
+        return bool(
+            self.env["mail.message"]
+            .sudo()
+            .search_count(
+                [("message_id", "=", self._wamid_to_message_id(wamid))], limit=1
+            )
+        )
 
     def _process_update_status(self, chat_id, status_info):
         notification = (
@@ -86,26 +127,48 @@ class MailGatewayWhatsappService(models.AbstractModel):
             .sudo()
             .search(
                 [
-                    ("gateway_message_id", "=", status_info["id"]),
+                    ("gateway_message_id", "=", status_info.get("id")),
                     ("gateway_channel_id", "=", chat_id),
                 ]
             )
         )
         if not notification:
             return
-        errors = [
-            f"[{error['code']}] {error['error_data']['details']}"
-            for error in status_info.get("errors", [])
-        ]
-        notification.write(
-            {
-                "failure_type": "unknown",
-                "notification_status": "exception",
-                "failure_reason": "\n".join(errors),
-            }
-        )
-        # notify user that we have a failure
-        notification.mail_message_id._notify_message_notification_update()
+        status = status_info.get("status")
+        if status == "failed":
+            errors = []
+            for error in status_info.get("errors", []):
+                detail = (
+                    (error.get("error_data") or {}).get("details")
+                    or error.get("message")
+                    or error.get("title")
+                    or ""
+                )
+                errors.append(f"[{error.get('code')}] {detail}")
+            notification.write(
+                {
+                    "failure_type": "unknown",
+                    "notification_status": "exception",
+                    "failure_reason": "\n".join(errors),
+                }
+            )
+            # notify user that we have a failure
+            notification.mail_message_id._notify_message_notification_update()
+        elif status in ("delivered", "read"):
+            # Meta does not guarantee the order of its statuses, so these only
+            # move forward: a late "delivered" never undoes a "read".
+            pending = notification.filtered(
+                lambda n: n.notification_status in ("ready", "process", "pending")
+            )
+            pending.write({"notification_status": "sent"})
+            unread = notification.filtered(
+                lambda n: status == "read"
+                and not n.is_read
+                and n.notification_status != "exception"
+            )
+            unread._set_read_gateway()
+            if pending or unread:
+                notification.mail_message_id._notify_message_notification_update()
 
     def _process_update(self, chat, message, value):
         chat.ensure_one()
@@ -203,7 +266,11 @@ class MailGatewayWhatsappService(models.AbstractModel):
                 author_id=author and author._name == "res.partner" and author.id,
                 gateway_type="whatsapp",
                 date=datetime.fromtimestamp(int(message["timestamp"])),
-                # message_id=update.message.message_id,
+                message_id=(
+                    self._wamid_to_message_id(message["id"])
+                    if message.get("id")
+                    else False
+                ),
                 subtype_xmlid="mail.mt_comment",
                 message_type="comment",
                 attachments=attachments,
@@ -335,7 +402,7 @@ class MailGatewayWhatsappService(models.AbstractModel):
         if message:
             record.sudo().write(
                 {
-                    "notification_status": "sent",
+                    "notification_status": "pending",
                     "failure_reason": False,
                     "gateway_message_id": message["messages"][0]["id"],
                 }

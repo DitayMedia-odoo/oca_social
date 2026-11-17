@@ -56,7 +56,18 @@ class GatewayController(Controller):
             and request.httprequest.charset
             or "utf-8"
         )
-        jsonrequest = json.loads(request.httprequest.get_data().decode(charset))
+        try:
+            jsonrequest = json.loads(request.httprequest.get_data().decode(charset))
+        except ValueError:
+            _logger.warning(
+                "Invalid JSON body for token %s with usage %s", token, usage
+            )
+            return request.make_response(
+                json.dumps({}),
+                [
+                    ("Content-Type", "application/json"),
+                ],
+            )
         dispatcher = (
             request.env[f"mail.gateway.{usage}"]
             .with_user(bot_data["webhook_user_id"])

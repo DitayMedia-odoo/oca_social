@@ -1,6 +1,7 @@
 # Copyright 2022 CreuBlanca
 # License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+import copy
 import hashlib
 import hmac
 import json
@@ -15,6 +16,9 @@ from odoo.tests.common import tagged
 from odoo.tools import mute_logger
 
 from odoo.addons.mail_gateway.tests.common import MailGatewayTestCase
+from odoo.addons.mail_gateway_whatsapp.models.mail_gateway_whatsapp import (
+    MailGatewayWhatsappService,
+)
 
 
 @tagged("-at_install", "post_install")
@@ -200,7 +204,7 @@ class TestMailGatewayWhatsApp(MailGatewayTestCase):
                 hashlib.sha256,
             ).hexdigest()
             headers_dict["x-hub-signature-256"] = f"sha256={hex_dig}"
-        self.url_open(
+        return self.url_open(
             f"/gateway/{self.gateway.gateway_type}/{webhook}/update",
             data=data,
             headers=headers_dict,
@@ -559,6 +563,191 @@ class TestMailGatewayWhatsApp(MailGatewayTestCase):
             composer.action_send_whatsapp()
         self.assertEqual(len(capture.records), 1)
         self.assertEqual(capture.records.body, Markup("<p>Body test</p>"))
+
+    def _integrate(self):
+        self.gateway.webhook_key = self.webhook
+        self.gateway.set_webhook()
+        self.integrate_webhook()
+
+    def _count_wamid(self, wamid):
+        return self.env["mail.message"].search_count(
+            [("message_id", "=", f"<{wamid}@whatsapp.mail_gateway>")]
+        )
+
+    def test_receive_duplicate_message_is_ignored(self):
+        # Meta retries a delivery that is not answered in time: the same wamid
+        # must end up as a single message in the conversation.
+        self.receive_message(self.message_01)
+        self.assertEqual(self._count_wamid("wamid.ID"), 1)
+        response = self.set_message(self.message_01, self.webhook)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._count_wamid("wamid.ID"), 1)
+        other = copy.deepcopy(self.message_01)
+        other["entry"][0]["changes"][0]["value"]["messages"][0]["id"] = "wamid.OTHER"
+        self.set_message(other, self.webhook)
+        self.assertEqual(self._count_wamid("wamid.OTHER"), 1)
+        self.assertEqual(self._count_wamid("wamid.ID"), 1)
+
+    @mute_logger("odoo.addons.mail_gateway_whatsapp.models.mail_gateway_whatsapp")
+    def test_failing_message_does_not_break_webhook(self):
+        self._integrate()
+        payload = copy.deepcopy(self.message_01)
+        value = payload["entry"][0]["changes"][0]["value"]
+        bad_msg = value["messages"][0]
+        bad_msg["id"] = "wamid.BAD"
+        good_msg = copy.deepcopy(bad_msg)
+        good_msg["id"] = "wamid.GOOD"
+        good_msg["text"] = {"body": "GOOD BODY"}
+        value["messages"] = [bad_msg, good_msg]
+        original = MailGatewayWhatsappService._process_update
+
+        def process_update(service, chat, message, value):
+            if message["id"] == "wamid.BAD":
+                raise ValueError("boom")
+            return original(service, chat, message, value)
+
+        with patch.object(
+            MailGatewayWhatsappService, "_process_update", process_update
+        ):
+            response = self.set_message(payload, self.webhook)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._count_wamid("wamid.BAD"), 0)
+        self.assertEqual(self._count_wamid("wamid.GOOD"), 1)
+
+    @mute_logger("odoo.addons.mail_gateway.controllers.gateway")
+    def test_invalid_json_answers_200(self):
+        self._integrate()
+        response = self.url_open(
+            f"/gateway/{self.gateway.gateway_type}/{self.webhook}/update",
+            data="{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def _status_payload(self, recipient, wamid, status, errors=None):
+        status_info = {
+            "id": wamid,
+            "status": status,
+            "timestamp": "1234",
+            "recipient_id": recipient,
+        }
+        if errors is not None:
+            status_info["errors"] = errors
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                    "changes": [
+                        {
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {
+                                    "display_phone_number": "1234",
+                                    "phone_number_id": "1234",
+                                },
+                                "statuses": [status_info],
+                            },
+                            "field": "messages",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    def _send_outgoing(self, wamid="wamid.OUT"):
+        self._integrate()
+        partner = self.env["res.partner"].create(
+            {"name": "DEMO", "phone": "+34699999999"}
+        )
+        ctx = {
+            "default_res_model": partner._name,
+            "default_res_id": partner.id,
+            "default_number_field_name": "phone",
+            "default_composition_mode": "comment",
+            "default_gateway_id": self.gateway.id,
+        }
+        self.gateway.whatsapp_account_id = "123456"
+        form_composer = Form(self.env["whatsapp.composer"].with_context(**ctx))
+        form_composer.body = "Body test"
+        form_composer.template_id = self.ws_template
+        composer = form_composer.save()
+        channel = partner._whatsapp_get_channel(
+            composer.number_field_name, composer.gateway_id
+        )
+        with patch("requests.post") as post_mock:
+            response_mock = MagicMock()
+            response_mock.status_code = 200
+            response_mock.json.return_value = {"messages": [{"id": wamid}]}
+            post_mock.return_value = response_mock
+            composer.action_send_whatsapp()
+        notifications = self.env["mail.notification"].search(
+            [("gateway_message_id", "=", wamid)]
+        )
+        self.assertTrue(notifications)
+        return channel, notifications
+
+    def _send_status(self, channel, wamid, status, errors=None):
+        payload = self._status_payload(
+            channel.gateway_channel_token, wamid, status, errors
+        )
+        response = self.set_message(payload, self.webhook)
+        self.assertEqual(response.status_code, 200)
+
+    def _statuses(self, notifications):
+        notifications.invalidate_recordset()
+        return set(notifications.mapped("notification_status"))
+
+    def test_status_delivered_then_read(self):
+        channel, notifications = self._send_outgoing()
+        self.assertEqual(self._statuses(notifications), {"pending"})
+        self._send_status(channel, "wamid.OUT", "sent")
+        self.assertEqual(self._statuses(notifications), {"pending"})
+        self._send_status(channel, "wamid.OUT", "delivered")
+        self.assertEqual(self._statuses(notifications), {"sent"})
+        self.assertFalse(any(notifications.mapped("is_read")))
+        self._send_status(channel, "wamid.OUT", "read")
+        self.assertEqual(self._statuses(notifications), {"sent"})
+        self.assertTrue(all(notifications.mapped("is_read")))
+        self.assertTrue(all(notifications.mapped("read_date")))
+
+    def test_status_out_of_order_never_goes_back(self):
+        channel, notifications = self._send_outgoing()
+        # "read" arrives before "delivered"
+        self._send_status(channel, "wamid.OUT", "read")
+        self._send_status(channel, "wamid.OUT", "delivered")
+        self.assertEqual(self._statuses(notifications), {"sent"})
+        self.assertTrue(all(notifications.mapped("is_read")))
+
+    def test_status_failed_without_error_data(self):
+        # Meta does not always include error_data.details in a failed status.
+        channel, notifications = self._send_outgoing()
+        self._send_status(
+            channel,
+            "wamid.OUT",
+            "failed",
+            errors=[{"code": 131047, "title": "Re-engagement message"}],
+        )
+        self.assertEqual(self._statuses(notifications), {"exception"})
+        for notification in notifications:
+            self.assertIn("[131047] Re-engagement message", notification.failure_reason)
+
+    def test_status_failed_with_error_data(self):
+        channel, notifications = self._send_outgoing()
+        self._send_status(
+            channel,
+            "wamid.OUT",
+            "failed",
+            errors=[{"code": 131047, "error_data": {"details": "Window closed"}}],
+        )
+        notifications.invalidate_recordset()
+        for notification in notifications:
+            self.assertIn("[131047] Window closed", notification.failure_reason)
+
+    def test_status_of_unknown_message_is_ignored(self):
+        channel, notifications = self._send_outgoing()
+        self._send_status(channel, "wamid.UNKNOWN", "delivered")
+        self.assertEqual(self._statuses(notifications), {"pending"})
 
     def test_compose(self):
         self.gateway.webhook_key = self.webhook
